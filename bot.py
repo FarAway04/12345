@@ -1,278 +1,148 @@
 import logging
-import os
-import json
-
 from aiogram import Bot, Dispatcher, types, executor
-from aiogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton
-)
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
+import json
+import os
 
-# 🔑 Token va admin ID
-API_TOKEN = os.environ.get("API_TOKEN")
-ADMIN_ID = int(os.environ.get("ADMIN_ID"))
+API_TOKEN = os.getenv("API_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 logging.basicConfig(level=logging.INFO)
+
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot, storage=MemoryStorage())
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 
 MOVIES_FILE = "movies.json"
 
-# 🔑 Fayl mavjud bo‘lmasa yaratish
+# JSON ni tayyorlash
 if not os.path.exists(MOVIES_FILE):
     with open(MOVIES_FILE, "w") as f:
-        json.dump({"movies": [], "channels": [], "users": []}, f)
+        json.dump({"movies": [], "channels": [], "users": [], "admins": [ADMIN_ID]}, f)
 
-# 🔑 JSON yuklash/saqlash
 def load_data():
-    with open(MOVIES_FILE, "r") as f:
+    with open(MOVIES_FILE) as f:
         return json.load(f)
 
 def save_data(data):
     with open(MOVIES_FILE, "w") as f:
         json.dump(data, f)
 
-# 🔑 Asosiy menyu
-def main_menu(is_admin=False):
+# Menyular
+def main_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("🎬 Kino olish"))
-    if is_admin:
-        kb.add(
-            KeyboardButton("➕ Kino qo'shish"),
-            KeyboardButton("➖ Kino o'chirish"),
-            KeyboardButton("✏️ Kino tahrirlash"),
-            KeyboardButton("⭐ Kino reyting"),
-            KeyboardButton("📊 Statistika"),
-            KeyboardButton("📢 Majburiy Kanal")
-        )
+    kb.add(KeyboardButton("🎬 Kinolar"))
+    kb.add(KeyboardButton("👤 Adminlar"))
+    kb.add(KeyboardButton("📊 Statistika"))
+    kb.add(KeyboardButton("📢 Kanallar"))
     return kb
 
-# 🔑 Obuna tekshir
-async def check_subs(user_id):
-    data = load_data()
-    for ch in data["channels"]:
-        member = await bot.get_chat_member(ch["username"], user_id)
-        if member.status not in ["member", "administrator", "creator"]:
-            return False
-    return True
+def kinolar_menu():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(KeyboardButton("🎥 Kino qo‘shish"))
+    kb.add(KeyboardButton("🗑 Kino o‘chirish"))
+    kb.add(KeyboardButton("✏️ Kino tahrirlash"))
+    kb.add(KeyboardButton("🔙 Ortga"))
+    return kb
 
-# 🔑 START
+def adminlar_menu():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(KeyboardButton("➕ Admin qo‘shish"))
+    kb.add(KeyboardButton("➖ Admin o‘chirish"))
+    kb.add(KeyboardButton("🔙 Ortga"))
+    return kb
+
+# HOLATLAR
+class AdminState(StatesGroup):
+    waiting_for_new_admin = State()
+    waiting_for_delete_admin = State()
+
+# START
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
-    user_id = message.from_user.id
     data = load_data()
-    if user_id not in data.get("users", []):
+    user_id = message.from_user.id
+    if user_id not in data["users"]:
         data["users"].append(user_id)
         save_data(data)
-    if not await check_subs(user_id):
-        text = "Botdan foydalanish uchun quyidagi kanallarga obuna bo‘ling:"
-        kb = InlineKeyboardMarkup()
-        for ch in data["channels"]:
-            kb.add(InlineKeyboardButton(ch["username"], url=f"https://t.me/{ch['username'].replace('@','')}"))
-        kb.add(InlineKeyboardButton("✅ Tekshirish", callback_data="check"))
-        await message.answer(text, reply_markup=kb)
-    else:
-        await message.answer(
-            "Asosiy menyu:",
-            reply_markup=main_menu(user_id == ADMIN_ID)
-        )
+    await message.answer("Asosiy menyu:", reply_markup=main_menu())
 
-@dp.callback_query_handler(lambda c: c.data == "check")
-async def check_callback(call: types.CallbackQuery):
-    if await check_subs(call.from_user.id):
-        await call.message.answer(
-            "✅ Obuna tekshirildi!",
-            reply_markup=main_menu(call.from_user.id == ADMIN_ID)
-        )
-    else:
-        await call.message.answer("❌ Hali ham obuna bo‘lmadingiz.")
+# Tugmalar
+@dp.message_handler(lambda m: m.text == "🎬 Kinolar")
+async def kinolar(message: types.Message):
+    await message.answer("Kinolar bo‘limi:", reply_markup=kinolar_menu())
 
-# 🔑 Kino olish
-@dp.message_handler(lambda m: m.text == "🎬 Kino olish")
-async def get_movie(message: types.Message):
-    await message.answer("Kino kodini kiriting:")
+@dp.message_handler(lambda m: m.text == "👤 Adminlar")
+async def adminlar(message: types.Message):
+    await message.answer("Adminlar bo‘limi:", reply_markup=adminlar_menu())
 
-@dp.message_handler(lambda m: m.text.isdigit())
-async def send_movie(message: types.Message):
-    code = int(message.text)
-    data = load_data()
-    for m in data["movies"]:
-        if m["code"] == code:
-            await message.answer_video(m["file_id"], caption=m["info"])
-            return
-    await message.answer("❌ Bunday kod topilmadi!")
-
-# 🔑 FSM States
-class AddMovieState(StatesGroup):
-    waiting_for_file = State()
-    waiting_for_info = State()
-
-# 🔑 Kino qo‘shish (FSM)
-@dp.message_handler(lambda m: m.text == "➕ Kino qo'shish")
-async def add_movie(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await message.answer("🎬 Kino faylini yubor.")
-    await AddMovieState.waiting_for_file.set()
-
-@dp.message_handler(content_types=types.ContentType.VIDEO, state=AddMovieState.waiting_for_file)
-async def save_file(message: types.Message, state: FSMContext):
-    await state.update_data(file_id=message.video.file_id)
-    await message.answer("📄 Kino haqida ma’lumot yubor.")
-    await AddMovieState.waiting_for_info.set()
-
-@dp.message_handler(state=AddMovieState.waiting_for_info)
-async def save_info(message: types.Message, state: FSMContext):
-    data = load_data()
-    user_data = await state.get_data()
-    file_id = user_data['file_id']
-    info = message.text
-    code = len(data["movies"]) + 1
-    data["movies"].append({
-        "code": code,
-        "file_id": file_id,
-        "info": info,
-        "rating": 0
-    })
-    save_data(data)
-    await message.answer(f"✅ Kino qo‘shildi! Kodi: {code}")
-    await state.finish()
-
-# 🔑 Kino o‘chirish
-@dp.message_handler(lambda m: m.text == "➖ Kino o'chirish")
-async def delete_movie(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await message.answer("O‘chirish uchun kino kodini yuboring:")
-
-@dp.message_handler(lambda m: m.text.isdigit() and m.from_user.id == ADMIN_ID)
-async def delete_movie_by_code(message: types.Message):
-    data = load_data()
-    code = int(message.text)
-    movies = data["movies"]
-    data["movies"] = [m for m in movies if m["code"] != code]
-    save_data(data)
-    await message.answer(f"✅ Kino {code} o‘chirildi!")
-
-# 🔑 Kino tahrirlash
-class EditMovieState(StatesGroup):
-    waiting_for_code = State()
-    waiting_for_info = State()
-
-@dp.message_handler(lambda m: m.text == "✏️ Kino tahrirlash")
-async def edit_movie(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await message.answer("Tahrirlanadigan kino kodini yuboring:")
-    await EditMovieState.waiting_for_code.set()
-
-@dp.message_handler(state=EditMovieState.waiting_for_code)
-async def edit_movie_info(message: types.Message, state: FSMContext):
-    await state.update_data(code=int(message.text))
-    await message.answer("Yangi ma’lumotni yuboring:")
-    await EditMovieState.waiting_for_info.set()
-
-@dp.message_handler(state=EditMovieState.waiting_for_info)
-async def save_edited_info(message: types.Message, state: FSMContext):
-    data = load_data()
-    user_data = await state.get_data()
-    code = user_data['code']
-    for m in data["movies"]:
-        if m["code"] == code:
-            m["info"] = message.text
-    save_data(data)
-    await message.answer(f"✅ Kino {code} ma’lumoti yangilandi!")
-    await state.finish()
-
-# 🔑 Kino reyting
-@dp.message_handler(lambda m: m.text == "⭐ Kino reyting")
-async def movie_rating(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await message.answer("Qaysi kino reytingini ko‘rishni xohlaysiz? Kino kodini yuboring:")
-
-@dp.message_handler(lambda m: m.text.isdigit() and m.from_user.id == ADMIN_ID)
-async def show_rating(message: types.Message):
-    data = load_data()
-    code = int(message.text)
-    for m in data["movies"]:
-        if m["code"] == code:
-            await message.answer(f"Kino {code} reytingi: {m['rating']}")
-            return
-    await message.answer("❌ Bunday kod topilmadi!")
-
-# 🔑 Statistika
 @dp.message_handler(lambda m: m.text == "📊 Statistika")
-async def stats(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
+async def statistika(message: types.Message):
     data = load_data()
-    text = f"👥 Userlar: {len(data['users'])}\n🎬 Kinolar: {len(data['movies'])}"
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("Top 10 kinolar", callback_data="top10"))
-    kb.add(InlineKeyboardButton("Ortga", callback_data="back"))
-    await message.answer(text, reply_markup=kb)
-
-@dp.callback_query_handler(lambda c: c.data == "top10")
-async def top10(call: types.CallbackQuery):
-    data = load_data()
-    movies = sorted(data["movies"], key=lambda x: x.get("rating", 0), reverse=True)[:10]
-    text = "🎬 Top 10 kinolar:\n"
-    for m in movies:
-        text += f"{m['code']}: {m['info']} (Reyting: {m['rating']})\n"
-    await call.message.answer(text)
-
-@dp.callback_query_handler(lambda c: c.data == "back")
-async def back(call: types.CallbackQuery):
-    await call.message.answer("Asosiy menyu", reply_markup=main_menu(True))
-
-# 🔑 Majburiy kanal boshqarish
-@dp.message_handler(lambda m: m.text == "📢 Majburiy Kanal")
-async def channel_manage(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    data = load_data()
-    text = "Hozirgi kanallar:\n"
-    for ch in data["channels"]:
-        text += f"{ch['id']}: {ch['username']}\n"
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("➕ Qo‘shish", callback_data="add_ch"),
-        InlineKeyboardButton("➖ O‘chirish", callback_data="del_ch"),
+    await message.answer(
+        f"👥 Userlar: {len(data['users'])}\n"
+        f"🎬 Kinolar: {len(data['movies'])}\n"
+        f"👑 Adminlar: {len(data['admins'])}"
     )
-    await message.answer(text, reply_markup=kb)
 
-@dp.callback_query_handler(lambda c: c.data == "add_ch")
-async def add_ch(call: types.CallbackQuery):
-    await call.message.answer("Kanal username’ini yuboring:")
+@dp.message_handler(lambda m: m.text == "📢 Kanallar")
+async def kanallar(message: types.Message):
+    await message.answer("Kanallar bo‘limi hali tayyor emas.")
 
-@dp.message_handler(lambda m: m.reply_to_message and "Kanal username" in m.reply_to_message.text)
-async def save_ch(message: types.Message):
-    data = load_data()
-    username = message.text.strip()
-    new_id = 1 if not data["channels"] else max([c["id"] for c in data["channels"]]) + 1
-    data["channels"].append({"id": new_id, "username": username})
-    save_data(data)
-    await message.answer(f"✅ Kanal qo‘shildi: {username}")
+@dp.message_handler(lambda m: m.text == "🔙 Ortga")
+async def ortga(message: types.Message):
+    await message.answer("Asosiy menyu:", reply_markup=main_menu())
 
-@dp.callback_query_handler(lambda c: c.data == "del_ch")
-async def del_ch(call: types.CallbackQuery):
-    await call.message.answer("O‘chirmoqchi bo‘lgan kanal username yoki ID sini yuboring:")
+# ADMIN QO‘SHISH
+@dp.message_handler(lambda m: m.text == "➕ Admin qo‘shish")
+async def admin_qoshish(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Ruxsat yo‘q!")
+        return
+    await message.answer("Yangi adminning ID sini yuboring:")
+    await AdminState.waiting_for_new_admin.set()
 
-@dp.message_handler(lambda m: m.reply_to_message and "O‘chirmoqchi" in m.reply_to_message.text)
-async def delete_ch(message: types.Message):
-    data = load_data()
-    val = message.text.strip()
-    if val.isdigit():
-        data["channels"] = [c for c in data["channels"] if c["id"] != int(val)]
-    else:
-        data["channels"] = [c for c in data["channels"] if c["username"] != val]
-    save_data(data)
-    await message.answer("✅ Kanal o‘chirildi!")
+@dp.message_handler(state=AdminState.waiting_for_new_admin)
+async def save_new_admin(message: types.Message, state: FSMContext):
+    try:
+        new_id = int(message.text)
+        data = load_data()
+        if new_id not in data["admins"]:
+            data["admins"].append(new_id)
+            save_data(data)
+            await message.answer(f"✅ Admin qo‘shildi: {new_id}")
+        else:
+            await message.answer("❗ Bu ID allaqachon admin.")
+    except ValueError:
+        await message.answer("❗ Noto‘g‘ri ID. Raqam yuboring.")
+    await state.finish()
 
-# ✅ Botni ishga tushirish
+# ADMIN O‘CHIRISH
+@dp.message_handler(lambda m: m.text == "➖ Admin o‘chirish")
+async def admin_ochirish(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Ruxsat yo‘q!")
+        return
+    await message.answer("O‘chiriladigan adminning ID sini yuboring:")
+    await AdminState.waiting_for_delete_admin.set()
+
+@dp.message_handler(state=AdminState.waiting_for_delete_admin)
+async def delete_admin(message: types.Message, state: FSMContext):
+    try:
+        del_id = int(message.text)
+        data = load_data()
+        if del_id in data["admins"]:
+            data["admins"].remove(del_id)
+            save_data(data)
+            await message.answer(f"✅ Admin o‘chirildi: {del_id}")
+        else:
+            await message.answer("❗ Bu ID admin emas.")
+    except ValueError:
+        await message.answer("❗ Noto‘g‘ri ID. Raqam yuboring.")
+    await state.finish()
+
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
