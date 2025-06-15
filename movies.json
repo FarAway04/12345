@@ -1,6 +1,6 @@
 {
     "movies": [],
-    "channels": [],
+    "channels": [@MyKinoTv_Channel],
     "users": [],
     "admins": []
 }
