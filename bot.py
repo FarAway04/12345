@@ -1,26 +1,41 @@
 import logging
+import os
+import json
+
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton
 )
-import json
-import os
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
 
+# 🔑 Token va admin ID
 API_TOKEN = os.environ.get("API_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher(bot, storage=MemoryStorage())
 
 MOVIES_FILE = "movies.json"
 
+# 🔑 Fayl mavjud bo‘lmasa yaratish
 if not os.path.exists(MOVIES_FILE):
     with open(MOVIES_FILE, "w") as f:
         json.dump({"movies": [], "channels": [], "users": []}, f)
 
-# 📌 Asosiy menyu
+# 🔑 JSON yuklash/saqlash
+def load_data():
+    with open(MOVIES_FILE, "r") as f:
+        return json.load(f)
+
+def save_data(data):
+    with open(MOVIES_FILE, "w") as f:
+        json.dump(data, f)
+
+# 🔑 Asosiy menyu
 def main_menu(is_admin=False):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add(KeyboardButton("🎬 Kino olish"))
@@ -35,16 +50,7 @@ def main_menu(is_admin=False):
         )
     return kb
 
-# 📌 JSON
-def load_data():
-    with open(MOVIES_FILE, "r") as f:
-        return json.load(f)
-
-def save_data(data):
-    with open(MOVIES_FILE, "w") as f:
-        json.dump(data, f)
-
-# 📌 Obuna tekshir
+# 🔑 Obuna tekshir
 async def check_subs(user_id):
     data = load_data()
     for ch in data["channels"]:
@@ -53,7 +59,7 @@ async def check_subs(user_id):
             return False
     return True
 
-# 📌 START
+# 🔑 START
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
     user_id = message.from_user.id
@@ -84,7 +90,7 @@ async def check_callback(call: types.CallbackQuery):
     else:
         await call.message.answer("❌ Hali ham obuna bo‘lmadingiz.")
 
-# 📌 Kino olish
+# 🔑 Kino olish
 @dp.message_handler(lambda m: m.text == "🎬 Kino olish")
 async def get_movie(message: types.Message):
     await message.answer("Kino kodini kiriting:")
@@ -99,38 +105,50 @@ async def send_movie(message: types.Message):
             return
     await message.answer("❌ Bunday kod topilmadi!")
 
-# 📌 Kino qo'shish (Admin)
+# 🔑 FSM States
+class AddMovieState(StatesGroup):
+    waiting_for_file = State()
+    waiting_for_info = State()
+
+# 🔑 Kino qo‘shish (FSM)
 @dp.message_handler(lambda m: m.text == "➕ Kino qo'shish")
 async def add_movie(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
-    await message.answer("Kino faylini yuboring.")
-    dp.register_message_handler(save_file, content_types=types.ContentType.VIDEO, state="save_file")
+    await message.answer("🎬 Kino faylini yubor.")
+    await AddMovieState.waiting_for_file.set()
 
-async def save_file(message: types.Message):
-    data = load_data()
-    data["temp_file"] = message.video.file_id
-    save_data(data)
-    await message.answer("Kino haqida ma’lumot yuboring.")
-    dp.register_message_handler(save_info, state="save_info")
+@dp.message_handler(content_types=types.ContentType.VIDEO, state=AddMovieState.waiting_for_file)
+async def save_file(message: types.Message, state: FSMContext):
+    await state.update_data(file_id=message.video.file_id)
+    await message.answer("📄 Kino haqida ma’lumot yubor.")
+    await AddMovieState.waiting_for_info.set()
 
-async def save_info(message: types.Message):
+@dp.message_handler(state=AddMovieState.waiting_for_info)
+async def save_info(message: types.Message, state: FSMContext):
     data = load_data()
-    file_id = data.pop("temp_file")
+    user_data = await state.get_data()
+    file_id = user_data['file_id']
     info = message.text
     code = len(data["movies"]) + 1
-    data["movies"].append({"code": code, "file_id": file_id, "info": info, "rating": 0})
+    data["movies"].append({
+        "code": code,
+        "file_id": file_id,
+        "info": info,
+        "rating": 0
+    })
     save_data(data)
     await message.answer(f"✅ Kino qo‘shildi! Kodi: {code}")
+    await state.finish()
 
-# 📌 Kino o'chirish (Admin)
+# 🔑 Kino o‘chirish
 @dp.message_handler(lambda m: m.text == "➖ Kino o'chirish")
 async def delete_movie(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     await message.answer("O‘chirish uchun kino kodini yuboring:")
-    dp.register_message_handler(delete_movie_by_code)
 
+@dp.message_handler(lambda m: m.text.isdigit() and m.from_user.id == ADMIN_ID)
 async def delete_movie_by_code(message: types.Message):
     data = load_data()
     code = int(message.text)
@@ -139,39 +157,44 @@ async def delete_movie_by_code(message: types.Message):
     save_data(data)
     await message.answer(f"✅ Kino {code} o‘chirildi!")
 
-# 📌 Kino tahrirlash (Admin)
+# 🔑 Kino tahrirlash
+class EditMovieState(StatesGroup):
+    waiting_for_code = State()
+    waiting_for_info = State()
+
 @dp.message_handler(lambda m: m.text == "✏️ Kino tahrirlash")
 async def edit_movie(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     await message.answer("Tahrirlanadigan kino kodini yuboring:")
-    dp.register_message_handler(edit_movie_info)
+    await EditMovieState.waiting_for_code.set()
 
-async def edit_movie_info(message: types.Message):
-    data = load_data()
-    code = int(message.text)
-    data["edit_code"] = code
-    save_data(data)
+@dp.message_handler(state=EditMovieState.waiting_for_code)
+async def edit_movie_info(message: types.Message, state: FSMContext):
+    await state.update_data(code=int(message.text))
     await message.answer("Yangi ma’lumotni yuboring:")
-    dp.register_message_handler(save_edited_info)
+    await EditMovieState.waiting_for_info.set()
 
-async def save_edited_info(message: types.Message):
+@dp.message_handler(state=EditMovieState.waiting_for_info)
+async def save_edited_info(message: types.Message, state: FSMContext):
     data = load_data()
-    code = data.pop("edit_code")
+    user_data = await state.get_data()
+    code = user_data['code']
     for m in data["movies"]:
         if m["code"] == code:
             m["info"] = message.text
     save_data(data)
     await message.answer(f"✅ Kino {code} ma’lumoti yangilandi!")
+    await state.finish()
 
-# 📌 Kino reyting
+# 🔑 Kino reyting
 @dp.message_handler(lambda m: m.text == "⭐ Kino reyting")
 async def movie_rating(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     await message.answer("Qaysi kino reytingini ko‘rishni xohlaysiz? Kino kodini yuboring:")
-    dp.register_message_handler(show_rating)
 
+@dp.message_handler(lambda m: m.text.isdigit() and m.from_user.id == ADMIN_ID)
 async def show_rating(message: types.Message):
     data = load_data()
     code = int(message.text)
@@ -181,7 +204,7 @@ async def show_rating(message: types.Message):
             return
     await message.answer("❌ Bunday kod topilmadi!")
 
-# 📌 Statistika
+# 🔑 Statistika
 @dp.message_handler(lambda m: m.text == "📊 Statistika")
 async def stats(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -206,7 +229,7 @@ async def top10(call: types.CallbackQuery):
 async def back(call: types.CallbackQuery):
     await call.message.answer("Asosiy menyu", reply_markup=main_menu(True))
 
-# 📌 Majburiy kanal (Admin)
+# 🔑 Majburiy kanal boshqarish
 @dp.message_handler(lambda m: m.text == "📢 Majburiy Kanal")
 async def channel_manage(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -225,8 +248,8 @@ async def channel_manage(message: types.Message):
 @dp.callback_query_handler(lambda c: c.data == "add_ch")
 async def add_ch(call: types.CallbackQuery):
     await call.message.answer("Kanal username’ini yuboring:")
-    dp.register_message_handler(save_ch)
 
+@dp.message_handler(lambda m: m.reply_to_message and "Kanal username" in m.reply_to_message.text)
 async def save_ch(message: types.Message):
     data = load_data()
     username = message.text.strip()
@@ -238,8 +261,8 @@ async def save_ch(message: types.Message):
 @dp.callback_query_handler(lambda c: c.data == "del_ch")
 async def del_ch(call: types.CallbackQuery):
     await call.message.answer("O‘chirmoqchi bo‘lgan kanal username yoki ID sini yuboring:")
-    dp.register_message_handler(delete_ch)
 
+@dp.message_handler(lambda m: m.reply_to_message and "O‘chirmoqchi" in m.reply_to_message.text)
 async def delete_ch(message: types.Message):
     data = load_data()
     val = message.text.strip()
@@ -250,5 +273,6 @@ async def delete_ch(message: types.Message):
     save_data(data)
     await message.answer("✅ Kanal o‘chirildi!")
 
+# ✅ Botni ishga tushirish
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
