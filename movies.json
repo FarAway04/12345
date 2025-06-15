@@ -1,5 +1,6 @@
 {
-  "movies": [],
-  "channels": [],
-  "users": []
+    "movies": [],
+    "channels": [],
+    "users": [],
+    "admins": []
 }
