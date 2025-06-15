@@ -9,7 +9,7 @@ API_TOKEN = os.environ.get("API_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 
 # 🔑 Majburiy kanal (istasa)
-CHANNELS = ["@YOUR_CHANNEL"]
+CHANNELS = ["@MyKinoTv_Channel"]
 
 # 🔑 Log sozlash
 logging.basicConfig(level=logging.INFO)
